@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 1. FORCE BLACK BACKGROUND EVERYWHERE */
+:root, html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: #000000;
+  overflow: hidden; /* Prevents scrollbars */
+}
+
+/* 2. ENSURE MAP CONTAINER FILLS SCREEN */
+#__next, main {
+  height: 100%;
+  width: 100%;
+}
+
+/* --- CYBERPUNK POPUP STYLES --- */
+.mapboxgl-popup {
+  max-width: 250px !important;
+}
+
+.mapboxgl-popup-content {
+  background: rgba(0, 0, 0, 0.85) !important; /* Dark Glass */
+  backdrop-filter: blur(10px) !important;      /* Blur effect */
+  border: 1px solid #33ff33 !important;        /* Neon Green Border */
+  border-radius: 8px !important;
+  box-shadow: 0 0 15px rgba(51, 255, 51, 0.4) !important; /* Glow */
+  padding: 15px !important;
+  color: #fff !important;
+  font-family: 'Courier New', monospace !important; /* Hacker Font */
+}
+
+.mapboxgl-popup-tip {
+  border-top-color: #33ff33 !important; /* Match the neon border */
+  border-bottom-color: #33ff33 !important;
+}
+
+/* Close button style */
+.mapboxgl-popup-close-button {
+  color: #33ff33 !important;
+  font-size: 20px !important;
+  right: 5px !important;
+  top: 5px !important;
+}
+.mapboxgl-popup-close-button:hover {
+  background: none !important;
+  color: white !important;
+}
