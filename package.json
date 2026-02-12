@@ -9,6 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.95.3",
     "@tailwindcss/postcss": "^4.1.18",
     "@types/mapbox-gl": "^3.4.1",
     "clsx": "latest",

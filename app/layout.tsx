@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Information Architecture App",
-  description: "High-end minimalist information architecture workspace",
+  title: "CrowdRadar",
+  description: "Real-time crowd monitoring system",
 };
 
 export default function RootLayout({
