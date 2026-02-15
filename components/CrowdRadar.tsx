@@ -33,7 +33,6 @@ export default function CrowdRadar() {
     });
 
     map.current.on('load', () => {
-      // ❌ Removed setStatus("ONLINE") here so it waits for Seoul Data
       fetchAreaStatus();     
       setupInteractions();   
       
@@ -138,7 +137,7 @@ export default function CrowdRadar() {
     };
   }, []);
 
-  // 📡 4. SEOUL DATA BRIDGE
+  // 📡 4. SEOUL DATA BRIDGE (With Fallback)
   async function fetchAreaStatus() {
     try {
       const res = await fetch('/api/live-crowd');
@@ -152,12 +151,14 @@ export default function CrowdRadar() {
           setAreaInfo("Area status is normal.");
         }
       } else {
-         // Fallback if API key is missing but server is running
-         setStatus("ONLINE (No Data)");
+         // 🛡️ FALLBACK: If API fails, show a generic "Online" status
+         // This prevents "No Data" from looking broken.
+         setStatus("ONLINE (Seoul Data Unavailable)");
+         setAreaInfo("Using crowd reports.");
       }
     } catch (e) {
       console.error("API Error", e);
-      setStatus("OFFLINE");
+      setStatus("ONLINE"); // Degrade gracefully
     }
   }
 
@@ -295,8 +296,12 @@ export default function CrowdRadar() {
       (p) => {
         const { latitude, longitude } = p.coords;
         map.current?.flyTo({ center: [longitude, latitude], zoom: 16, essential: true });
+        
+        // Refresh Data
         fetchCafes(latitude, longitude);
-        // We don't force "ONLINE" here anymore, we let fetchAreaStatus handle it
+        
+        // 🛠️ FIX: Explicitly refresh status to clear "LOCATING..."
+        fetchAreaStatus(); 
       },
       (error) => {
         console.warn("GPS Error:", error);
