@@ -13,131 +13,151 @@ const DEFAULT_CENTER = { lat: 37.4979, lng: 127.0276 };
 export default function CrowdRadar() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
-  // We track the user's location so we can re-fetch if they move
-  const userLocation = useRef<{lat: number, lng: number} | null>(null); 
+  const userMarker = useRef<mapboxgl.Marker | null>(null); // 📍 NEW: Tracks the visual blue dot
+
+  // ✅ FIX: Changed from useRef to useState so we can update it
+  const [userLocation, setUserLocation] = useState<{lat: number, lng: number} | null>(null); 
+  
   const [status, setStatus] = useState("CONNECTING...");
   const [areaInfo, setAreaInfo] = useState<string>("");
+  const [lastUpdateCoords, setLastUpdateCoords] = useState<{lat: number, lng: number} | null>(null);
 
+  // 🗺️ 1. INITIALIZE MAP (This was missing!)
   useEffect(() => {
-    if (map.current) return;
+    if (map.current) return; // Initialize only once
 
-    const initMap = (lng: number, lat: number) => {
-      if (!mapContainer.current) return;
+    map.current = new mapboxgl.Map({
+      container: mapContainer.current!,
+      style: 'mapbox://styles/mapbox/dark-v11', // Professional Dark Mode
+      center: [DEFAULT_CENTER.lng, DEFAULT_CENTER.lat],
+      zoom: 15,
+      pitch: 45, // Cool 3D angle
+    });
+
+    map.current.on('load', () => {
+      setStatus("ONLINE");
+      fetchAreaStatus();     // Get Seoul API data
+      setupInteractions();   // Enable popup clicks
       
-      // Save initial location
-      userLocation.current = { lat, lng };
+      // Fetch initial cafes at default center
+      fetchCafes(DEFAULT_CENTER.lat, DEFAULT_CENTER.lng);
+    });
 
-      map.current = new mapboxgl.Map({
-        container: mapContainer.current,
-        style: 'mapbox://styles/mapbox/dark-v11',
-        center: [lng, lat],
-        zoom: 15,
-        pitch: 0,
-      });
-
-      // Add "Me" Marker
-      new mapboxgl.Marker({ color: '#3b82f6', scale: 1.2 })
-        .setLngLat([lng, lat])
-        .addTo(map.current);
-
-      map.current.on('load', () => {
-        fetchAreaStatus(); //
-        setStatus("SCANNING AREA...");
-        fetchCafes(lat, lng); // <--- NOW WE PASS LOCATION!
-        subscribeToUpdates();
-      });
-
-      setupInteractions();
-    };
-
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (p) => initMap(p.coords.longitude, p.coords.latitude),
-        () => initMap(DEFAULT_CENTER.lng, DEFAULT_CENTER.lat)
-      );
-    } else {
-      initMap(DEFAULT_CENTER.lng, DEFAULT_CENTER.lat);
-    }
+    // Cleanup on unmount
+    return () => map.current?.remove();
   }, []);
+
+  // 🛰️ 2. GPS TRACKING (The "Follow Me" Logic)
+  useEffect(() => {
+    if (!navigator.geolocation) return;
   
-  // 📡 The "Bridge" Function
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        
+        // A. Update State
+        setUserLocation({ lat: latitude, lng: longitude });
+
+        // B. Update the Blue Dot on the Map (Visual)
+        if (map.current) {
+          if (!userMarker.current) {
+            // Create the dot if it doesn't exist
+            const el = document.createElement('div');
+            el.className = 'user-marker'; // We will style this in CSS below
+            el.style.width = '15px';
+            el.style.height = '15px';
+            el.style.backgroundColor = '#3b82f6'; // Blue
+            el.style.borderRadius = '50%';
+            el.style.border = '2px solid white';
+            el.style.boxShadow = '0 0 10px rgba(59, 130, 246, 0.5)';
+
+            userMarker.current = new mapboxgl.Marker(el)
+              .setLngLat([longitude, latitude])
+              .addTo(map.current);
+          } else {
+            // Move the dot if it already exists
+            userMarker.current.setLngLat([longitude, latitude]);
+          }
+        }
+  
+        // C. The 100-Meter Fetch Logic
+        // We check distance from the LAST update point
+        if (lastUpdateCoords) {
+           const dist = calculateDistance(latitude, longitude, lastUpdateCoords.lat, lastUpdateCoords.lng);
+           
+           if (dist > 100) {
+             console.log(`User moved ${Math.round(dist)}m. Refreshing Data...`);
+             fetchCafes(latitude, longitude);
+             setLastUpdateCoords({ lat: latitude, lng: longitude });
+           }
+        } else {
+           // First time running? Force a fetch.
+           setLastUpdateCoords({ lat: latitude, lng: longitude });
+           fetchCafes(latitude, longitude);
+        }
+      },
+      (err) => console.error("GPS Error:", err),
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+    );
+  
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [lastUpdateCoords]); // Dependency ensures we have access to latest coords
+  
+  // 📡 The "Bridge" Function (Seoul Data)
   async function fetchAreaStatus() {
     try {
-      setStatus("CHECKING..."); // 1. Tell user we are working
-      
-      // 2. Call your API route
       const res = await fetch('/api/live-crowd');
       const data = await res.json();
       
       if (data.success) {
-        // 3. Update the UI with Real Data
-        // Format: "LIVE: BUSY (82,500 ppl)"
         setStatus(`LIVE: ${data.status} (${data.population.toLocaleString()} ppl)`);
-        
-        // 4. Set the formal warning message if needed
         if (data.status === "BUSY" || data.status === "VERY_BUSY") {
-          setAreaInfo("Warning: High congestion detected in this area.");
+          setAreaInfo("Warning: High congestion detected.");
         } else {
-          setAreaInfo("Area status is currently normal.");
+          setAreaInfo("Area status is normal.");
         }
       }
     } catch (e) {
       console.error("API Error", e);
-      setStatus("OFFLINE"); // Fallback if server is dead
+      setStatus("OFFLINE");
     }
   }
 
-  // 📡 NEW: Fetch ONLY nearby cafes using your SQL function
+  // 📡 Fetch Cafes from Supabase
   async function fetchCafes(lat: number, lng: number) {
     console.log("Searching for cafes near:", lat, lng);
     
-    // ✅ CORRECT: Call rpc directly (not .from().rpc())
     const { data, error } = await supabase
-      .rpc('get_nearby_cafes', { lat, lng });
+  .rpc('get_nearby_cafes', { 
+    user_lat: lat,   // 👈 MATCHES the new SQL variable
+    user_lng: lng    // 👈 MATCHES the new SQL variable
+  });
 
     if (error) {
       console.error("Error fetching nearby cafes:", error);
-      setStatus("ERROR");
     } else if (data) {
-      console.log(`Found ${data.length} cafes nearby.`);
+      console.log(`Found ${data.length} cafes.`);
       
       const now = new Date();
-      const currentHour = now.getHours(); // e.g., 11 AM
+      const currentHour = now.getHours(); 
 
       const processedData = data.map((cafe: any) => {
         const lastUpdate = cafe.last_updated ? new Date(cafe.last_updated) : new Date(0);
         const diffInMinutes = (now.getTime() - lastUpdate.getTime()) / (1000 * 60);
 
-        // 🧠 THE SMART LOGIC:
-        // 1. If we have a FRESH user report (< 60 mins), trust it.
-        // 2. If not, look at the "Personality" trend for this hour.
         if (diffInMinutes < 60) {
-           return cafe; // Use real-time report
+           return cafe; // Trust User Report
         } else {
-           // If 'busyness_trend' exists, grab the score for this hour. 
-           // If it's null (no data), default to 3 (Quiet).
            const trendScore = cafe.busyness_trend ? cafe.busyness_trend[currentHour] : 3;
-           return { ...cafe, busyness: trendScore };
+           return { ...cafe, busyness: trendScore }; // Use Trend
         }
       });
 
       updateMapData(processedData);
-      // We removed the setStatus("ONLINE") here so it doesn't overwrite the Seoul API status
     }
   }
 
-  function subscribeToUpdates() {
-    supabase
-      .channel('cafes-channel')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'cafes' }, () => {
-        // If data changes, re-fetch based on where the user IS right now
-        if (userLocation.current) {
-          fetchCafes(userLocation.current.lat, userLocation.current.lng);
-        }
-      })
-      .subscribe();
-  }
-
+  // 🗺️ Draw Dots on Map
   function updateMapData(cafes: any[]) {
     if (!map.current) return;
 
@@ -163,16 +183,17 @@ export default function CrowdRadar() {
         type: 'circle',
         source: 'cafes',
         paint: {
-          'circle-radius': 6,
+          'circle-radius': 8, // Made slightly bigger
           'circle-color': ['get', 'color'],
-          'circle-stroke-width': 1,
-          'circle-stroke-color': '#000000',
-          'circle-opacity': 0.9
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#18181b', // Dark border for contrast
+          'circle-opacity': 1
         }
       });
     }
   }
 
+  // 🖱️ Popups
   function setupInteractions() {
     if (!map.current) return;
     
@@ -205,35 +226,24 @@ export default function CrowdRadar() {
     map.current.on('mouseleave', 'cafe-dots', () => map.current!.getCanvas().style.cursor = '');
   }
 
-  // Handle "Locate Me" button click
+  // 📍 Handle "Locate Me" Button
   const handleLocateMe = () => {
-    if (!navigator.geolocation) {
-      setStatus("GPS NOT SUPPORTED");
-      return;
-    }
-
+    if (!navigator.geolocation) return;
     setStatus("LOCATING...");
 
     navigator.geolocation.getCurrentPosition(
-      // ✅ Success Callback
       (p) => {
         const { latitude, longitude } = p.coords;
-        userLocation.current = { lat: latitude, lng: longitude };
-        map.current?.flyTo({ center: [longitude, latitude], zoom: 15 });
+        // Fly to user
+        map.current?.flyTo({ center: [longitude, latitude], zoom: 16, essential: true });
+        // Update data
         fetchCafes(latitude, longitude);
+        setStatus("ONLINE");
       },
-      // ❌ Error Callback (This fixes your issue)
       (error) => {
         console.warn("GPS Error:", error);
-        setStatus("GPS FAILED ❌");
-        
-        // Reset status back to "ONLINE" after 2 seconds so it doesn't look broken forever
-        setTimeout(() => {
-          setStatus("ONLINE");
-        }, 2500);
-      },
-      // ⏱️ Options: Give up after 5 seconds
-      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+        setStatus("GPS FAILED");
+      }
     );
   };
 
@@ -242,39 +252,37 @@ export default function CrowdRadar() {
       <link href="https://api.mapbox.com/mapbox-gl-js/v3.1.2/mapbox-gl.css" rel="stylesheet" />
       <div ref={mapContainer} style={{ width: '100%', height: '100%', position: 'absolute', top: 0, left: 0 }} />
       
+      {/* Top Status Pill */}
       <div style={{ 
         position: 'absolute', top: 24, left: '50%', transform: 'translateX(-50%)',
-        padding: '10px 20px', background: 'rgba(20,20,20,0.9)', // Made slightly darker/taller
-        backdropFilter: 'blur(8px)', borderRadius: '30px',
+        padding: '10px 20px', background: 'rgba(20,20,20,0.85)',
+        backdropFilter: 'blur(12px)', borderRadius: '30px',
         color: '#fff', fontSize: '13px', fontWeight: 500,
-        border: '1px solid rgba(255,255,255,0.2)',
-        zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px' // Stack items vertically
+        border: '1px solid rgba(255,255,255,0.1)',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.3)',
+        zIndex: 10, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px'
       }}>
-        {/* Row 1: The Status */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div style={{ width: 8, height: 8, borderRadius: '50%', background: status.includes('BUSY') ? '#ef4444' : '#22c55e' }}></div>
+          <div style={{ width: 8, height: 8, borderRadius: '50%', background: status.includes('BUSY') ? '#ef4444' : '#22c55e', boxShadow: status.includes('BUSY') ? '0 0 10px #ef4444' : '0 0 10px #22c55e' }}></div>
           {status}
         </div>
-
-        {/* Row 2: The Warning (Only shows if there is info) */}
-        {areaInfo && (
-          <div style={{ fontSize: '11px', color: '#fbbf24', fontWeight: 400 }}>
-            {areaInfo}
-          </div>
-        )}
+        {areaInfo && <div style={{ fontSize: '11px', color: '#fbbf24', opacity: 0.9 }}>{areaInfo}</div>}
       </div>
 
+      {/* Locate Me Button */}
       <button 
         onClick={handleLocateMe}
         style={{
           position: 'absolute', bottom: 32, right: 24,
-          width: '48px', height: '48px',
+          width: '50px', height: '50px',
           background: '#ffffff', color: 'black',
-          border: 'none', borderRadius: '12px',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+          border: 'none', borderRadius: '14px',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.4)',
           cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '20px', zIndex: 10
+          fontSize: '22px', zIndex: 10, transition: 'transform 0.2s'
         }}
+        onMouseDown={(e) => e.currentTarget.style.transform = 'scale(0.95)'}
+        onMouseUp={(e) => e.currentTarget.style.transform = 'scale(1)'}
       >
         📍
       </button>
@@ -282,9 +290,12 @@ export default function CrowdRadar() {
   );
 }
 
+// --- SUB-COMPONENTS & HELPERS ---
+
 function PopupCard({ id, name, busyness, color, onClose }: any) {
   const handleReport = async (level: number) => {
     onClose();
+    // Optimistic UI update (optional) or just send to DB
     await supabase
       .from('cafes')
       .update({ busyness: level, last_updated: new Date().toISOString() })
@@ -292,25 +303,41 @@ function PopupCard({ id, name, busyness, color, onClose }: any) {
   };
 
   return (
-    <div style={{ fontFamily: 'sans-serif', minWidth: '220px' }}>
-      <div style={{ fontWeight: 600, fontSize: '15px', marginBottom: '6px', color: '#fff' }}>
+    <div style={{ fontFamily: 'Inter, sans-serif', minWidth: '220px', padding: '4px' }}>
+      <div style={{ fontWeight: 600, fontSize: '16px', marginBottom: '8px', color: '#fff' }}>
         {name}
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', color: '#a1a1aa', marginBottom: '8px' }}>
-        <span>Live Capacity</span>
-        <span style={{ color: 'white', fontWeight: 500 }}>{busyness * 10}%</span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '13px', color: '#a1a1aa', marginBottom: '10px' }}>
+        <span>Current Load</span>
+        <span style={{ color: color, fontWeight: 600 }}>{busyness * 10}%</span>
       </div>
-      <div style={{ width: '100%', height: '6px', background: '#333', borderRadius: '4px', overflow: 'hidden', marginBottom: '12px' }}>
-        <div style={{ width: `${busyness * 10}%`, height: '100%', background: color }}></div>
+      
+      {/* Progress Bar */}
+      <div style={{ width: '100%', height: '6px', background: '#27272a', borderRadius: '10px', overflow: 'hidden', marginBottom: '16px' }}>
+        <div style={{ width: `${busyness * 10}%`, height: '100%', background: color, transition: 'width 0.5s ease' }}></div>
       </div>
-      <div style={{ borderTop: '1px solid #333', paddingTop: '10px' }}>
-        <div style={{ fontSize: '11px', color: '#888', marginBottom: '6px' }}>Incorrect? Fix it:</div>
-        <div style={{ display: 'flex', gap: '6px' }}>
-          <button onClick={() => handleReport(2)} style={{ flex: 1, background: '#142914', border: '1px solid #22c55e', color: '#22c55e', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '11px', fontWeight: 500 }}>Quiet</button>
-          <button onClick={() => handleReport(5)} style={{ flex: 1, background: '#2e2614', border: '1px solid #eab308', color: '#eab308', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '11px', fontWeight: 500 }}>Normal</button>
-          <button onClick={() => handleReport(9)} style={{ flex: 1, background: '#2e1414', border: '1px solid #ef4444', color: '#ef4444', borderRadius: '4px', padding: '6px 0', cursor: 'pointer', fontSize: '11px', fontWeight: 500 }}>Busy</button>
+
+      {/* Reporting Buttons */}
+      <div style={{ borderTop: '1px solid #3f3f46', paddingTop: '12px' }}>
+        <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: 500 }}>IS THIS WRONG? REPORT LIVE:</div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button onClick={() => handleReport(2)} style={{ flex: 1, background: 'rgba(34, 197, 94, 0.1)', border: '1px solid #22c55e', color: '#22c55e', borderRadius: '6px', padding: '8px 0', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Quiet</button>
+          <button onClick={() => handleReport(5)} style={{ flex: 1, background: 'rgba(234, 179, 8, 0.1)', border: '1px solid #eab308', color: '#eab308', borderRadius: '6px', padding: '8px 0', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Normal</button>
+          <button onClick={() => handleReport(9)} style={{ flex: 1, background: 'rgba(239, 68, 68, 0.1)', border: '1px solid #ef4444', color: '#ef4444', borderRadius: '6px', padding: '8px 0', cursor: 'pointer', fontSize: '12px', fontWeight: 600 }}>Busy</button>
         </div>
       </div>
     </div>
   );
+}
+
+// 📏 The Distance Helper
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const R = 6371000; 
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c; 
 }
