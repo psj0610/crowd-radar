@@ -33,7 +33,7 @@ export default function CrowdRadar() {
     });
 
     map.current.on('load', () => {
-      setStatus("ONLINE");
+      // ❌ Removed setStatus("ONLINE") here so it waits for Seoul Data
       fetchAreaStatus();     
       setupInteractions();   
       
@@ -94,7 +94,51 @@ export default function CrowdRadar() {
     return () => navigator.geolocation.clearWatch(watchId);
   }, [lastUpdateCoords]);
 
-  // 📡 3. SEOUL DATA BRIDGE
+  // 👂 3. REAL-TIME SYNC (Phone to Mac)
+  useEffect(() => {
+    const channel = supabase
+      .channel('realtime-cafes')
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'cafes' },
+        (payload: any) => {
+          console.log("Realtime Update:", payload);
+          
+          if (map.current) {
+            const newCafe = payload.new;
+            const source: any = map.current.getSource('cafes');
+            
+            if (source && source._data) {
+              const data = source._data;
+              const updatedFeatures = data.features.map((f: any) => {
+                if (f.properties.id === newCafe.id) {
+                  // If a realtime update comes in, it is FRESH (0 mins old)
+                  // So we trust it immediately.
+                  const newColor = newCafe.busyness > 7 ? '#ef4444' : newCafe.busyness > 4 ? '#eab308' : '#22c55e';
+                  return {
+                    ...f,
+                    properties: { 
+                      ...f.properties, 
+                      busyness: newCafe.busyness, 
+                      color: newColor 
+                    }
+                  };
+                }
+                return f;
+              });
+              source.setData({ ...data, features: updatedFeatures });
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // 📡 4. SEOUL DATA BRIDGE
   async function fetchAreaStatus() {
     try {
       const res = await fetch('/api/live-crowd');
@@ -107,6 +151,9 @@ export default function CrowdRadar() {
         } else {
           setAreaInfo("Area status is normal.");
         }
+      } else {
+         // Fallback if API key is missing but server is running
+         setStatus("ONLINE (No Data)");
       }
     } catch (e) {
       console.error("API Error", e);
@@ -114,11 +161,10 @@ export default function CrowdRadar() {
     }
   }
 
-  // 📡 4. FETCH CAFES (Using Correct SQL Inputs)
+  // 📡 5. FETCH CAFES (The 60-Minute Logic Engine)
   async function fetchCafes(lat: number, lng: number) {
     console.log("Searching for cafes near:", lat, lng);
     
-    // ✅ Use user_lat/user_lng to match our fixed SQL function
     const { data, error } = await supabase
       .rpc('get_nearby_cafes', { 
         user_lat: lat,
@@ -135,13 +181,17 @@ export default function CrowdRadar() {
 
       const processedData = data.map((cafe: any) => {
         const lastUpdate = cafe.last_updated ? new Date(cafe.last_updated) : new Date(0);
+        // Calculate age of the report in minutes
         const diffInMinutes = (now.getTime() - lastUpdate.getTime()) / (1000 * 60);
 
+        // 🛡️ THE 60-MINUTE RULE
+        // If report is fresh (< 60 mins), use the USER DATA.
+        // If report is old (> 60 mins), use the TREND DATA.
         if (diffInMinutes < 60) {
-           return cafe; // Trust User Report
+           return cafe; // Keeps the manual report
         } else {
            const trendScore = cafe.busyness_trend ? cafe.busyness_trend[currentHour] : 3;
-           return { ...cafe, busyness: trendScore }; // Use Trend
+           return { ...cafe, busyness: trendScore }; // Reverts to trend
         }
       });
 
@@ -149,7 +199,7 @@ export default function CrowdRadar() {
     }
   }
 
-  // 🗺️ 5. UPDATE MAP DOTS
+  // 🗺️ 6. UPDATE MAP DOTS
   function updateMapData(cafes: any[]) {
     if (!map.current) return;
 
@@ -185,7 +235,7 @@ export default function CrowdRadar() {
     }
   }
 
-  // 🖱️ 6. INTERACTIONS (With Instant Feedback)
+  // 🖱️ 7. INTERACTIONS
   function setupInteractions() {
     if (!map.current) return;
     
@@ -210,7 +260,7 @@ export default function CrowdRadar() {
           busyness={props.busyness} 
           color={props.color}
           onClose={() => popup.remove()}
-          // ✨ NEW: Optimistic UI Callback
+          // ✨ Optimistic UI Callback
           onReport={(newStatus: number) => {
              const newColor = newStatus > 7 ? '#ef4444' : newStatus > 4 ? '#eab308' : '#22c55e';
              const source: any = map.current?.getSource('cafes');
@@ -246,7 +296,7 @@ export default function CrowdRadar() {
         const { latitude, longitude } = p.coords;
         map.current?.flyTo({ center: [longitude, latitude], zoom: 16, essential: true });
         fetchCafes(latitude, longitude);
-        setStatus("ONLINE");
+        // We don't force "ONLINE" here anymore, we let fetchAreaStatus handle it
       },
       (error) => {
         console.warn("GPS Error:", error);
