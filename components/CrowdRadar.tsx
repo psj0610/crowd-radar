@@ -13,41 +13,38 @@ const DEFAULT_CENTER = { lat: 37.4979, lng: 127.0276 };
 export default function CrowdRadar() {
   const mapContainer = useRef<HTMLDivElement>(null);
   const map = useRef<mapboxgl.Map | null>(null);
-  const userMarker = useRef<mapboxgl.Marker | null>(null); // 📍 NEW: Tracks the visual blue dot
+  const userMarker = useRef<mapboxgl.Marker | null>(null);
 
-  // ✅ FIX: Changed from useRef to useState so we can update it
   const [userLocation, setUserLocation] = useState<{lat: number, lng: number} | null>(null); 
-  
   const [status, setStatus] = useState("CONNECTING...");
   const [areaInfo, setAreaInfo] = useState<string>("");
   const [lastUpdateCoords, setLastUpdateCoords] = useState<{lat: number, lng: number} | null>(null);
 
-  // 🗺️ 1. INITIALIZE MAP (This was missing!)
+  // 🗺️ 1. INITIALIZE MAP
   useEffect(() => {
-    if (map.current) return; // Initialize only once
+    if (map.current) return;
 
     map.current = new mapboxgl.Map({
       container: mapContainer.current!,
-      style: 'mapbox://styles/mapbox/dark-v11', // Professional Dark Mode
+      style: 'mapbox://styles/mapbox/dark-v11',
       center: [DEFAULT_CENTER.lng, DEFAULT_CENTER.lat],
       zoom: 15,
-      pitch: 45, // Cool 3D angle
+      pitch: 45,
     });
 
     map.current.on('load', () => {
       setStatus("ONLINE");
-      fetchAreaStatus();     // Get Seoul API data
-      setupInteractions();   // Enable popup clicks
+      fetchAreaStatus();     
+      setupInteractions();   
       
-      // Fetch initial cafes at default center
+      // Initial fetch at Gangnam (or default center)
       fetchCafes(DEFAULT_CENTER.lat, DEFAULT_CENTER.lng);
     });
 
-    // Cleanup on unmount
     return () => map.current?.remove();
   }, []);
 
-  // 🛰️ 2. GPS TRACKING (The "Follow Me" Logic)
+  // 🛰️ 2. GPS TRACKING
   useEffect(() => {
     if (!navigator.geolocation) return;
   
@@ -55,18 +52,16 @@ export default function CrowdRadar() {
       (pos) => {
         const { latitude, longitude } = pos.coords;
         
-        // A. Update State
         setUserLocation({ lat: latitude, lng: longitude });
 
-        // B. Update the Blue Dot on the Map (Visual)
+        // Update Blue Dot
         if (map.current) {
           if (!userMarker.current) {
-            // Create the dot if it doesn't exist
             const el = document.createElement('div');
-            el.className = 'user-marker'; // We will style this in CSS below
+            el.className = 'user-marker';
             el.style.width = '15px';
             el.style.height = '15px';
-            el.style.backgroundColor = '#3b82f6'; // Blue
+            el.style.backgroundColor = '#3b82f6';
             el.style.borderRadius = '50%';
             el.style.border = '2px solid white';
             el.style.boxShadow = '0 0 10px rgba(59, 130, 246, 0.5)';
@@ -75,23 +70,19 @@ export default function CrowdRadar() {
               .setLngLat([longitude, latitude])
               .addTo(map.current);
           } else {
-            // Move the dot if it already exists
             userMarker.current.setLngLat([longitude, latitude]);
           }
         }
   
-        // C. The 100-Meter Fetch Logic
-        // We check distance from the LAST update point
+        // 100m Logic
         if (lastUpdateCoords) {
            const dist = calculateDistance(latitude, longitude, lastUpdateCoords.lat, lastUpdateCoords.lng);
-           
            if (dist > 100) {
              console.log(`User moved ${Math.round(dist)}m. Refreshing Data...`);
              fetchCafes(latitude, longitude);
              setLastUpdateCoords({ lat: latitude, lng: longitude });
            }
         } else {
-           // First time running? Force a fetch.
            setLastUpdateCoords({ lat: latitude, lng: longitude });
            fetchCafes(latitude, longitude);
         }
@@ -101,9 +92,9 @@ export default function CrowdRadar() {
     );
   
     return () => navigator.geolocation.clearWatch(watchId);
-  }, [lastUpdateCoords]); // Dependency ensures we have access to latest coords
-  
-  // 📡 The "Bridge" Function (Seoul Data)
+  }, [lastUpdateCoords]);
+
+  // 📡 3. SEOUL DATA BRIDGE
   async function fetchAreaStatus() {
     try {
       const res = await fetch('/api/live-crowd');
@@ -123,15 +114,16 @@ export default function CrowdRadar() {
     }
   }
 
-  // 📡 Fetch Cafes from Supabase
+  // 📡 4. FETCH CAFES (Using Correct SQL Inputs)
   async function fetchCafes(lat: number, lng: number) {
     console.log("Searching for cafes near:", lat, lng);
     
+    // ✅ Use user_lat/user_lng to match our fixed SQL function
     const { data, error } = await supabase
-  .rpc('get_nearby_cafes', { 
-    user_lat: lat,   // 👈 MATCHES the new SQL variable
-    user_lng: lng    // 👈 MATCHES the new SQL variable
-  });
+      .rpc('get_nearby_cafes', { 
+        user_lat: lat,
+        user_lng: lng
+      });
 
     if (error) {
       console.error("Error fetching nearby cafes:", error);
@@ -157,7 +149,7 @@ export default function CrowdRadar() {
     }
   }
 
-  // 🗺️ Draw Dots on Map
+  // 🗺️ 5. UPDATE MAP DOTS
   function updateMapData(cafes: any[]) {
     if (!map.current) return;
 
@@ -183,17 +175,17 @@ export default function CrowdRadar() {
         type: 'circle',
         source: 'cafes',
         paint: {
-          'circle-radius': 8, // Made slightly bigger
+          'circle-radius': 8,
           'circle-color': ['get', 'color'],
           'circle-stroke-width': 2,
-          'circle-stroke-color': '#18181b', // Dark border for contrast
+          'circle-stroke-color': '#18181b',
           'circle-opacity': 1
         }
       });
     }
   }
 
-  // 🖱️ Popups
+  // 🖱️ 6. INTERACTIONS (With Instant Feedback)
   function setupInteractions() {
     if (!map.current) return;
     
@@ -218,6 +210,24 @@ export default function CrowdRadar() {
           busyness={props.busyness} 
           color={props.color}
           onClose={() => popup.remove()}
+          // ✨ NEW: Optimistic UI Callback
+          onReport={(newStatus: number) => {
+             const newColor = newStatus > 7 ? '#ef4444' : newStatus > 4 ? '#eab308' : '#22c55e';
+             const source: any = map.current?.getSource('cafes');
+             if (source && source._data) {
+               const data = source._data;
+               const updatedFeatures = data.features.map((f: any) => {
+                 if (f.properties.id === props.id) {
+                   return {
+                     ...f,
+                     properties: { ...f.properties, busyness: newStatus, color: newColor }
+                   };
+                 }
+                 return f;
+               });
+               source.setData({ ...data, features: updatedFeatures });
+             }
+          }}
         />
       );
     });
@@ -226,7 +236,7 @@ export default function CrowdRadar() {
     map.current.on('mouseleave', 'cafe-dots', () => map.current!.getCanvas().style.cursor = '');
   }
 
-  // 📍 Handle "Locate Me" Button
+  // 📍 LOCATE ME BUTTON
   const handleLocateMe = () => {
     if (!navigator.geolocation) return;
     setStatus("LOCATING...");
@@ -234,9 +244,7 @@ export default function CrowdRadar() {
     navigator.geolocation.getCurrentPosition(
       (p) => {
         const { latitude, longitude } = p.coords;
-        // Fly to user
         map.current?.flyTo({ center: [longitude, latitude], zoom: 16, essential: true });
-        // Update data
         fetchCafes(latitude, longitude);
         setStatus("ONLINE");
       },
@@ -292,10 +300,13 @@ export default function CrowdRadar() {
 
 // --- SUB-COMPONENTS & HELPERS ---
 
-function PopupCard({ id, name, busyness, color, onClose }: any) {
+function PopupCard({ id, name, busyness, color, onClose, onReport }: any) {
   const handleReport = async (level: number) => {
     onClose();
-    // Optimistic UI update (optional) or just send to DB
+    // 1. Instant Visual Update
+    if (onReport) onReport(level);
+
+    // 2. Database Update
     await supabase
       .from('cafes')
       .update({ busyness: level, last_updated: new Date().toISOString() })
@@ -312,12 +323,10 @@ function PopupCard({ id, name, busyness, color, onClose }: any) {
         <span style={{ color: color, fontWeight: 600 }}>{busyness * 10}%</span>
       </div>
       
-      {/* Progress Bar */}
       <div style={{ width: '100%', height: '6px', background: '#27272a', borderRadius: '10px', overflow: 'hidden', marginBottom: '16px' }}>
         <div style={{ width: `${busyness * 10}%`, height: '100%', background: color, transition: 'width 0.5s ease' }}></div>
       </div>
 
-      {/* Reporting Buttons */}
       <div style={{ borderTop: '1px solid #3f3f46', paddingTop: '12px' }}>
         <div style={{ fontSize: '11px', color: '#71717a', marginBottom: '8px', fontWeight: 500 }}>IS THIS WRONG? REPORT LIVE:</div>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -330,7 +339,7 @@ function PopupCard({ id, name, busyness, color, onClose }: any) {
   );
 }
 
-// 📏 The Distance Helper
+// 📏 Distance Helper
 function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
   const R = 6371000; 
   const dLat = (lat2 - lat1) * Math.PI / 180;
